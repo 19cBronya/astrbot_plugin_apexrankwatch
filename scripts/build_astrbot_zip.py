@@ -5,8 +5,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_DIR_NAME = "astrbot_plugin_apexrankwatch"
-ARCHIVE_NAME = f"{ROOT_DIR_NAME}_2.1.9.zip"
-OUT_PATH = Path.home() / "Desktop" / ARCHIVE_NAME
 EXCLUDE_DIRS = {
     ".git",
     ".pytest_cache",
@@ -19,7 +17,20 @@ EXCLUDE_DIRS = {
     "_generated",
     "AstrBot",
 }
-EXCLUDE_FILES = {ARCHIVE_NAME, ".gitignore"}
+EXCLUDE_FILES = {".gitignore"}
+
+
+def read_metadata_value(key: str) -> str:
+    prefix = f"{key}:"
+    for line in (ROOT / "metadata.yaml").read_text(encoding="utf-8").splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip().strip("\"'")
+    raise RuntimeError(f"metadata.yaml 缺少 {key} 字段")
+
+
+ARCHIVE_NAME = f"{ROOT_DIR_NAME}_{read_metadata_value('version')}.zip"
+OUT_PATH = Path.home() / "Desktop" / ARCHIVE_NAME
+EXCLUDE_FILES.add(ARCHIVE_NAME)
 
 
 def should_include(path: Path) -> bool:
