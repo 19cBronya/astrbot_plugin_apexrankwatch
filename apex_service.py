@@ -402,6 +402,9 @@ class ApexApiClient:
         "auth",
         "authorization",
         "api_key",
+        "tracker_api_key",
+        "trn-api-key",
+        "trn_api_key",
         "apikey",
         "token",
         "secret",
@@ -424,12 +427,14 @@ class ApexApiClient:
     def __init__(
         self,
         api_key: str,
+        tracker_api_key: str,
         timeout_ms: int,
         max_retries: int,
         logger,
         debug_enabled: bool = False,
     ) -> None:
         self._api_key = api_key
+        self._tracker_api_key = tracker_api_key
         self._timeout = max(1, int(timeout_ms)) / 1000.0
         self._max_retries = max(0, int(max_retries))
         self._logger = logger
@@ -670,7 +675,7 @@ class ApexApiClient:
 
     def _tracker_headers(self) -> dict[str, str]:
         return {
-            "TRN-Api-Key": self._api_key,
+            "TRN-Api-Key": self._tracker_api_key,
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
         }
@@ -911,7 +916,7 @@ class ApexApiClient:
             return f"{match.group(1)}={cls._mask_identifier(match.group(2))}"
 
         text = re.sub(
-            r"(?i)\b(auth|authorization|api_key|apikey|token|secret|password|cookie)=([^&\s]+)",
+            r"(?i)\b(auth|authorization|api_key|tracker_api_key|trn-api-key|trn_api_key|apikey|token|secret|password|cookie)=([^&\s]+)",
             mask_secret_match,
             text,
         )

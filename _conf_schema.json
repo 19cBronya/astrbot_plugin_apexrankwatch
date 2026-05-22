@@ -1,5 +1,12 @@
 {
   "api_key": {
+    "description": "Apex Legends API Key（旧接口）",
+    "type": "string",
+    "hint": "用于地图轮换、全天地图和猎杀线。申请地址：https://portal.apexlegendsapi.com/ 。若返回验证提示，请先完成 Discord 绑定：https://portal.apexlegendsapi.com/discord-auth",
+    "obvious_hint": true,
+    "default": ""
+  },
+  "tracker_api_key": {
     "description": "Tracker.gg API Key",
     "type": "string",
     "hint": "请在 https://tracker.gg/developers 申请 TRN API Key。若返回 401/403，请先确认应用状态与白名单说明：https://trackernetwork.freshdesk.com/support/solutions/articles/19000152565-developer-apis-faqs",

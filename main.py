@@ -80,6 +80,7 @@ def _split_csv(raw: str, lowercase: bool = False) -> set[str]:
 @dataclass
 class PluginConfig:
     api_key: str
+    tracker_api_key: str
     debug_logging: bool
     check_interval: int
     timeout_ms: int
@@ -104,6 +105,7 @@ class PluginConfig:
             output_mode = "image"
         return PluginConfig(
             api_key=str(raw.get("api_key", "")).strip(),
+            tracker_api_key=str(raw.get("tracker_api_key", "")).strip(),
             debug_logging=coerce_bool(raw.get("debug_logging", False), False),
             check_interval=max(1, coerce_int(raw.get("check_interval", 2), 2)),
             timeout_ms=max(1000, coerce_int(raw.get("timeout_ms", 10000), 10000)),
@@ -251,6 +253,7 @@ class Main(Star):
 
         self._api = ApexApiClient(
             api_key=self._config.api_key,
+            tracker_api_key=self._config.tracker_api_key,
             debug_enabled=self._config.debug_logging,
             timeout_ms=self._config.timeout_ms,
             max_retries=self._config.max_retries,
@@ -744,38 +747,67 @@ class Main(Star):
         return None
 
     @staticmethod
-    def _api_key_apply_url() -> str:
+    def _tracker_api_key_apply_url() -> str:
         return "https://tracker.gg/developers"
 
     @staticmethod
-    def _api_verify_url() -> str:
+    def _tracker_api_verify_url() -> str:
         return "https://trackernetwork.freshdesk.com/support/solutions/articles/19000152565-developer-apis-faqs"
 
-    def _missing_api_key_text(self) -> str:
+    @staticmethod
+    def _legacy_api_key_apply_url() -> str:
+        return "https://portal.apexlegendsapi.com/"
+
+    @staticmethod
+    def _legacy_api_verify_url() -> str:
+        return "https://portal.apexlegendsapi.com/discord-auth"
+
+    def _missing_tracker_api_key_text(self) -> str:
         return "\n".join(
             [
                 self._time_line(),
-                "⚠️ 请先在插件配置中填写 API Key",
-                f"🔑 Key 申请地址: {self._api_key_apply_url()}",
+                "⚠️ 请先在插件配置中填写 tracker_api_key（玩家查询专用）",
+                f"🔑 Tracker Key 申请地址: {self._tracker_api_key_apply_url()}",
+            ]
+        )
+
+    def _missing_legacy_api_key_text(self) -> str:
+        return "\n".join(
+            [
+                self._time_line(),
+                "⚠️ 请先在插件配置中填写 api_key（地图/猎杀线专用）",
+                f"🔑 旧 API Key 申请地址: {self._legacy_api_key_apply_url()}",
             ]
         )
 
     def _api_request_failed_text(
-        self, action: str = "查询", error: Exception | None = None
+        self,
+        action: str = "查询",
+        error: Exception | None = None,
+        source: str = "tracker",
     ) -> str:
         lines = [self._time_line()]
+        if source == "legacy":
+            apply_url = self._legacy_api_key_apply_url()
+            verify_url = self._legacy_api_verify_url()
+            key_label = "旧 API Key"
+        else:
+            apply_url = self._tracker_api_key_apply_url()
+            verify_url = self._tracker_api_verify_url()
+            key_label = "Tracker Key"
+
         if isinstance(error, ApexApiError):
             lines.append(f"❌ {action}失败：{error.user_message}")
             if any(token in error.user_message for token in ("验证", "白名单", "限制", "权限")):
-                lines.append(f"🔗 开通说明: {self._api_verify_url()}")
+                lines.append(f"🔗 开通说明: {verify_url}")
             else:
-                lines.append(f"🔑 Key 申请地址: {self._api_key_apply_url()}")
+                lines.append(f"🔑 {key_label} 申请地址: {apply_url}")
             return "\n".join(lines)
 
         lines.extend(
             [
                 f"❌ {action}失败：请检查网络、API Key 是否有效，或稍后再试",
-                f"🔑 Key 申请地址: {self._api_key_apply_url()}",
+                f"🔑 {key_label} 申请地址: {apply_url}",
             ]
         )
         return "\n".join(lines)
@@ -1014,8 +1046,8 @@ class Main(Star):
             )
             return
 
-        if not self._config.api_key:
-            yield self._plain(event, self._missing_api_key_text())
+        if not self._config.tracker_api_key:
+            yield self._plain(event, self._missing_tracker_api_key_text())
             return
 
         identifier, use_uid = self._parse_identifier(player_name)
@@ -1042,11 +1074,11 @@ class Main(Star):
             return
         except ApexApiError as exc:
             logger.error(f"API 查询失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("查询", exc))
+            yield self._plain(event, self._api_request_failed_text("查询", exc, source="tracker"))
             return
         except Exception as exc:
             logger.error(f"API 查询失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("查询"))
+            yield self._plain(event, self._api_request_failed_text("查询", source="tracker"))
             return
 
         if player_data.rank_score < self._config.min_valid_score:
@@ -1080,18 +1112,18 @@ class Main(Star):
             return
 
         if not self._config.api_key:
-            yield self._plain(event, self._missing_api_key_text())
+            yield self._plain(event, self._missing_legacy_api_key_text())
             return
 
         try:
             rotation_info = await self._api.fetch_map_rotation_info()
         except ApexApiError as exc:
             logger.error(f"地图轮换查询失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("地图轮换查询", exc))
+            yield self._plain(event, self._api_request_failed_text("地图轮换查询", exc, source="legacy"))
             return
         except Exception as exc:
             logger.error(f"地图轮换查询失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("地图轮换查询"))
+            yield self._plain(event, self._api_request_failed_text("地图轮换查询", source="legacy"))
             return
 
         if self._is_text_output_mode():
@@ -1113,18 +1145,18 @@ class Main(Star):
             return
 
         if not self._config.api_key:
-            yield self._plain(event, self._missing_api_key_text())
+            yield self._plain(event, self._missing_legacy_api_key_text())
             return
 
         try:
             rotation_info = await self._api.fetch_map_rotation_info()
         except ApexApiError as exc:
             logger.error(f"匹配地图轮换查询失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("匹配地图轮换查询", exc))
+            yield self._plain(event, self._api_request_failed_text("匹配地图轮换查询", exc, source="legacy"))
             return
         except Exception as exc:
             logger.error(f"匹配地图轮换查询失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("匹配地图轮换查询"))
+            yield self._plain(event, self._api_request_failed_text("匹配地图轮换查询", source="legacy"))
             return
 
         if self._is_text_output_mode():
@@ -1154,17 +1186,17 @@ class Main(Star):
             return
 
         if not self._config.api_key:
-            yield self._plain(event, self._missing_api_key_text())
+            yield self._plain(event, self._missing_legacy_api_key_text())
             return
 
         try:
             schedule = await self._refresh_daily_map_schedule()
             if schedule is None:
-                yield self._plain(event, self._missing_api_key_text())
+                yield self._plain(event, self._missing_legacy_api_key_text())
                 return
         except Exception as exc:
             logger.error(f"全天地图查询失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("全天地图查询"))
+            yield self._plain(event, self._api_request_failed_text("全天地图查询", source="legacy"))
             return
 
         if not schedule.entries:
@@ -1199,7 +1231,7 @@ class Main(Star):
             return
 
         if not self._config.api_key:
-            yield self._plain(event, self._missing_api_key_text())
+            yield self._plain(event, self._missing_legacy_api_key_text())
             return
 
         raw_platform = (self._extract_command_args(event) or platform or "").strip()
@@ -1223,11 +1255,11 @@ class Main(Star):
             predator_info = await self._api.fetch_predator_info()
         except ApexApiError as exc:
             logger.error(f"猎杀线查询失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("猎杀线查询", exc))
+            yield self._plain(event, self._api_request_failed_text("猎杀线查询", exc, source="legacy"))
             return
         except Exception as exc:
             logger.error(f"猎杀线查询失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("猎杀线查询"))
+            yield self._plain(event, self._api_request_failed_text("猎杀线查询", source="legacy"))
             return
 
         if self._is_text_output_mode():
@@ -1418,8 +1450,8 @@ class Main(Star):
             )
             return
 
-        if not self._config.api_key:
-            yield self._plain(event, self._missing_api_key_text())
+        if not self._config.tracker_api_key:
+            yield self._plain(event, self._missing_tracker_api_key_text())
             return
 
         identifier, use_uid = self._parse_identifier(player_name)
@@ -1446,11 +1478,11 @@ class Main(Star):
             return
         except ApexApiError as exc:
             logger.error(f"添加群监控失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("添加监控", exc))
+            yield self._plain(event, self._api_request_failed_text("添加监控", exc, source="tracker"))
             return
         except Exception as exc:
             logger.error(f"添加群监控失败: {exc}")
-            yield self._plain(event, self._api_request_failed_text("添加监控"))
+            yield self._plain(event, self._api_request_failed_text("添加监控", source="tracker"))
             return
 
         if player_data.rank_score < self._config.min_valid_score:
@@ -1905,7 +1937,7 @@ class Main(Star):
         return False
 
     async def _poll_once(self) -> None:
-        if not self._config.api_key:
+        if not self._config.tracker_api_key:
             return
 
         poll_targets = []

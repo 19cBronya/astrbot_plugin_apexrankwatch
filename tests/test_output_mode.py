@@ -108,7 +108,12 @@ def test_output_mode_defaults_to_image_and_accepts_text():
 def test_player_rank_text_mode_does_not_render_image(monkeypatch):
     main_module = _load_main_module()
     plugin = object.__new__(main_module.Main)
-    plugin._config = types.SimpleNamespace(api_key="key", min_valid_score=1, output_mode="text")
+    plugin._config = types.SimpleNamespace(
+        api_key="legacy_key",
+        tracker_api_key="tracker_key",
+        min_valid_score=1,
+        output_mode="text",
+    )
     plugin._api = types.SimpleNamespace(
         fetch_player_stats_auto=lambda identifier, platform, use_uid: _async_return(
             (_sample_player(main_module), "PC")
@@ -142,7 +147,12 @@ def test_player_rank_image_mode_uses_rendered_image(monkeypatch, tmp_path):
     main_module = _load_main_module()
     image_path = tmp_path / "rank.png"
     plugin = object.__new__(main_module.Main)
-    plugin._config = types.SimpleNamespace(api_key="key", min_valid_score=1, output_mode="image")
+    plugin._config = types.SimpleNamespace(
+        api_key="legacy_key",
+        tracker_api_key="tracker_key",
+        min_valid_score=1,
+        output_mode="image",
+    )
     plugin._api = types.SimpleNamespace(
         fetch_player_stats_auto=lambda identifier, platform, use_uid: _async_return(
             (_sample_player(main_module), "PC")
@@ -170,6 +180,128 @@ def test_player_rank_image_mode_uses_rendered_image(monkeypatch, tmp_path):
 
 async def _async_return(value):
     return value
+
+
+def test_apexrank_requires_tracker_api_key(monkeypatch):
+    main_module = _load_main_module()
+    plugin = object.__new__(main_module.Main)
+    plugin._config = types.SimpleNamespace(
+        api_key="legacy_key",
+        tracker_api_key="",
+        min_valid_score=1,
+        output_mode="text",
+    )
+    plugin._api = types.SimpleNamespace()
+
+    monkeypatch.setattr(plugin, "_guard_access", lambda event: "")
+    monkeypatch.setattr(
+        plugin, "_parse_player_platform", lambda event, player, platform: (player, platform)
+    )
+    monkeypatch.setattr(plugin, "_is_blacklisted", lambda player: False)
+    monkeypatch.setattr(plugin, "_is_query_blocked", lambda player: False)
+    monkeypatch.setattr(plugin, "_time_line", lambda: "TIME")
+    monkeypatch.setattr(plugin, "_plain", lambda event, text: ("plain", text))
+
+    class _Event:
+        pass
+
+    async def collect():
+        return [item async for item in plugin.apexrank(_Event(), "yumola", "pc")]
+
+    result = asyncio.run(collect())
+    assert result[0][0] == "plain"
+    assert "tracker_api_key" in result[0][1]
+
+
+def test_apexmap_requires_legacy_api_key(monkeypatch):
+    main_module = _load_main_module()
+    plugin = object.__new__(main_module.Main)
+    plugin._config = types.SimpleNamespace(
+        api_key="",
+        tracker_api_key="tracker_key",
+        min_valid_score=1,
+        output_mode="text",
+    )
+    plugin._api = types.SimpleNamespace()
+
+    monkeypatch.setattr(plugin, "_guard_access", lambda event: "")
+    monkeypatch.setattr(plugin, "_time_line", lambda: "TIME")
+    monkeypatch.setattr(plugin, "_plain", lambda event, text: ("plain", text))
+
+    class _Event:
+        pass
+
+    async def collect():
+        return [item async for item in plugin.apexmap(_Event())]
+
+    result = asyncio.run(collect())
+    assert result[0][0] == "plain"
+    assert "api_key（地图/猎杀线专用）" in result[0][1]
+
+
+def test_dual_key_routing_tracker_vs_legacy(monkeypatch):
+    class _SilentLogger:
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+    class _DummyAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def aclose(self):
+            return None
+
+    async def run_case():
+        monkeypatch.setattr(apex_service.httpx, "AsyncClient", _DummyAsyncClient)
+        client = apex_service.ApexApiClient(
+            api_key="legacy_123",
+            tracker_api_key="tracker_456",
+            timeout_ms=1000,
+            max_retries=0,
+            logger=_SilentLogger(),
+        )
+        captured: dict[str, object] = {}
+
+        async def fake_with_headers(url, params, headers):
+            captured["player_url"] = url
+            captured["player_params"] = params
+            captured["player_headers"] = headers
+            return {
+                "data": {
+                    "platformInfo": {"platformUserIdentifier": "9997kazusa"},
+                    "segments": [
+                        {
+                            "type": "overview",
+                            "stats": {
+                                "level": {"value": 1},
+                                "rankScore": {"value": 1, "metadata": {"rankName": "Unranked"}},
+                            },
+                        }
+                    ],
+                }
+            }
+
+        async def fake_retry(url, params):
+            captured["legacy_url"] = url
+            captured["legacy_params"] = params
+            return {}
+
+        client._request_with_retry_with_headers = fake_with_headers
+        client._request_with_retry = fake_retry
+        try:
+            await client.fetch_player_stats_by_name("9997kazusa", "PC")
+            await client.fetch_predator_info()
+        finally:
+            await client.close()
+
+        assert "public-api.tracker.gg" in str(captured["player_url"])
+        assert captured["player_params"] == {}
+        assert "auth" not in captured["player_params"]  # type: ignore[operator]
+        assert captured["player_headers"]["TRN-Api-Key"] == "tracker_456"  # type: ignore[index]
+        assert "api.mozambiquehe.re/predator" in str(captured["legacy_url"])
+        assert captured["legacy_params"]["auth"] == "legacy_123"  # type: ignore[index]
+
+    asyncio.run(run_case())
 
 
 def test_parse_tracker_player_stats():
