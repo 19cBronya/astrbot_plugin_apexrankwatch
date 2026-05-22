@@ -9,7 +9,7 @@ Apex Rank Watch 是一个面向 QQ 群使用的 AstrBot 插件，用来查询 Ap
 - 查询排位地图轮换、API 学习确认的排位未来 24 小时地图和三人赛匹配地图轮换
 - 查询当前赛季结束时间
 - 查询本赛季猎杀线和大师数量（包含猎杀）
-- 支持玩家名、`uid:`、`uuid:` 查询
+- 支持玩家名查询；`uid:`、`uuid:` 会按平台 ID 透传给 Tracker（不保证每个平台都可用）
 - 支持群白名单、用户黑名单、玩家查询黑名单
 
 ## 常用命令效果
@@ -54,7 +54,6 @@ Apex Rank Watch 是一个面向 QQ 群使用的 AstrBot 插件，用来查询 Ap
 
 ```text
 /apexrank moeneri pc
-/apexrank uid:0000000000000 pc
 /apexrankwatch moeneri pc
 /apexrankremove moeneri pc
 /map
@@ -70,14 +69,14 @@ Apex Rank Watch 是一个面向 QQ 群使用的 AstrBot 插件，用来查询 Ap
 
 1. 在 AstrBot 插件管理页面上传插件压缩包，或将插件目录放入 AstrBot 的插件目录。
 2. 在插件配置里填写 `api_key`。
-3. 如果你的 Apex Legends API Key 还没有完成验证，请到 `https://portal.apexlegendsapi.com/discord-auth` 绑定 Discord。
+3. 如果查询返回 401/403，请检查 Tracker 应用状态与白名单说明：`https://trackernetwork.freshdesk.com/support/solutions/articles/19000152565-developer-apis-faqs`。
 4. 重启插件后，在群里发送 `/apexhelp` 查看命令。
 
 ## 配置项
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `api_key` | 空 | Apex Legends API Key |
+| `api_key` | 空 | Tracker.gg API Key（TRN-Api-Key） |
 | `check_interval` | `2` | 排位分监控轮询间隔，单位分钟 |
 | `timeout_ms` | `10000` | API 请求超时时间，单位毫秒 |
 | `max_retries` | `3` | API 请求失败重试次数 |
@@ -96,7 +95,8 @@ Apex Rank Watch 是一个面向 QQ 群使用的 AstrBot 插件，用来查询 Ap
 
 ## 注意事项
 
-- `/map`、玩家段位和猎杀线来自 Apex Legends API，网络波动或 API 限流时可能查询失败。
+- 玩家段位查询来自 Tracker API（`public-api.tracker.gg`），网络波动、限流或白名单限制时可能失败。
+- `/map` 与猎杀线仍来自 Apex Legends API，网络波动或 API 限流时可能查询失败。
 - `/全天地图` 当前/下一张以 Apex Legends API 为准；普通学习中会按已观测顺序临时推测未来 24 小时，插件会每小时自动补一次查询来推动闭环形成。观测到闭环后改为已确认地图池推断。新赛季、临近赛季更新或 API 显示地图池变化时会暂时只显示 API 当前/下一张。
 - 赛季结束时间来自公开倒计时页面，插件会统一按北京时间展示。
 - 同名玩家可能在多个平台存在记录，建议在命令后显式填写平台。

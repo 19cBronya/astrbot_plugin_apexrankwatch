@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import httpx
 
@@ -23,6 +23,10 @@ _TRANSLATIONS_FILE = Path(__file__).with_name("translations.json")
 
 APEX_API_PORTAL_URL = "https://portal.apexlegendsapi.com/"
 APEX_API_VERIFY_URL = "https://portal.apexlegendsapi.com/discord-auth"
+TRACKER_API_BASE_URL = "https://public-api.tracker.gg/v2/apex/standard"
+TRACKER_API_WHITELIST_URL = (
+    "https://trackernetwork.freshdesk.com/support/solutions/articles/19000152565-developer-apis-faqs"
+)
 APEX_SEASONS_HOME_URL = "https://apexseasons.online/"
 ESPORTSTALES_SEASONS_URL = "https://www.esportstales.com/apex-legends/season-end-date"
 APEX_STATUS_SEASON_COUNTDOWN_URL = "https://apexlegendsstatus.com/new-season-countdown"
@@ -454,15 +458,13 @@ class ApexApiClient:
     async def fetch_player_stats_by_name(
         self, player_name: str, platform: str
     ) -> ApexPlayerStats:
-        api_url = "https://api.mozambiquehe.re/bridge"
-        params = {"auth": self._api_key, "player": player_name, "platform": platform}
-        data = await self._request_player_data(api_url, params, player_name)
+        api_url = self._tracker_profile_url(platform, player_name)
+        data = await self._request_tracker_player_data(api_url, player_name)
         return _parse_player_stats(data, platform, player_name)
 
     async def fetch_player_stats_by_uid(self, uid: str, platform: str) -> ApexPlayerStats:
-        api_url = "https://api.mozambiquehe.re/bridge"
-        params = {"auth": self._api_key, "uid": uid, "platform": platform}
-        data = await self._request_player_data(api_url, params, uid)
+        api_url = self._tracker_profile_url(platform, uid)
+        data = await self._request_tracker_player_data(api_url, uid)
         return _parse_player_stats(data, platform, uid)
 
     async def fetch_map_rotation_info(self) -> MapRotationInfo:
@@ -650,6 +652,51 @@ class ApexApiClient:
             return await self.fetch_player_stats_by_uid(identifier, platform)
         return await self.fetch_player_stats_by_name(identifier, platform)
 
+    @staticmethod
+    def _tracker_platform_slug(platform: str) -> str:
+        normalized = normalize_platform(platform)
+        mapping = {
+            "PC": "origin",
+            "PS4": "psn",
+            "X1": "xbl",
+            "SWITCH": "origin",
+        }
+        return mapping.get(normalized, str(platform or "").strip().lower() or "origin")
+
+    def _tracker_profile_url(self, platform: str, identifier: str) -> str:
+        slug = self._tracker_platform_slug(platform)
+        encoded_identifier = quote(str(identifier or "").strip(), safe="")
+        return f"{TRACKER_API_BASE_URL}/profile/{slug}/{encoded_identifier}"
+
+    def _tracker_headers(self) -> dict[str, str]:
+        return {
+            "TRN-Api-Key": self._api_key,
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+        }
+
+    async def _request_tracker_player_data(
+        self, url: str, identifier: str
+    ) -> dict[str, Any]:
+        try:
+            data = await self._request_with_retry_with_headers(
+                url,
+                params={},
+                headers=self._tracker_headers(),
+            )
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response else 0
+            error_text = _extract_response_error_message(exc.response)
+            if status in (400, 404) or "not found" in error_text.lower():
+                raise PlayerNotFoundError(f"Player not found: {identifier}") from exc
+            raise
+        except ApexApiError:
+            raise
+
+        if _is_player_not_found(data):
+            raise PlayerNotFoundError(f"Player not found: {identifier}")
+        return data
+
     async def _request_player_data(
         self, url: str, params: dict[str, Any], identifier: str
     ) -> dict[str, Any]:
@@ -690,8 +737,22 @@ class ApexApiClient:
             try:
                 self._debug_log_request("JSON", url, params=params, headers=headers)
                 response = await self._client.get(url, params=params, headers=headers)
+                is_tracker_api = _is_tracker_api_url(url)
                 if response.status_code == 429:
                     error_text = _extract_response_error_message(response)
+                    if is_tracker_api:
+                        if attempt < self._max_retries:
+                            last_error = ApiRateLimitError(
+                                error_text or "Tracker API 请求过于频繁",
+                                user_message="Tracker API 当前限流，请稍后再试。",
+                                status_code=response.status_code,
+                            )
+                            continue
+                        raise ApiRateLimitError(
+                            error_text or "Tracker API 请求过于频繁",
+                            user_message="Tracker API 当前限流，请稍后再试。",
+                            status_code=response.status_code,
+                        )
                     if _requires_api_verification(error_text):
                         raise ApiAccountVerificationRequiredError(
                             error_text or "API Key 尚未完成账号验证",
@@ -714,6 +775,16 @@ class ApexApiClient:
                         status_code=response.status_code,
                     )
                 if response.status_code in (401, 403):
+                    if is_tracker_api:
+                        raise ApiAuthenticationError(
+                            _extract_response_error_message(response)
+                            or "Tracker API Key 无效、权限不足，或当前 IP 被限制",
+                            user_message=(
+                                "Tracker API Key 无效、未开通或当前 IP 被限制。"
+                                f"请检查应用状态、API 文档与白名单说明：{TRACKER_API_WHITELIST_URL}"
+                            ),
+                            status_code=response.status_code,
+                        )
                     raise ApiAuthenticationError(
                         _extract_response_error_message(response) or "API Key 无效或权限不足",
                         user_message=(
@@ -1983,10 +2054,37 @@ def normalize_platform(platform: str) -> str:
 def _is_player_not_found(data: dict[str, Any]) -> bool:
     if not isinstance(data, dict):
         return True
+
+    errors = data.get("errors")
+    if isinstance(errors, list) and errors:
+        has_error_message = False
+        for item in errors:
+            if not isinstance(item, dict):
+                continue
+            has_error_message = True
+            text = str(item.get("message") or item.get("code") or "").strip().lower()
+            if any(token in text for token in ("not found", "collectorresultstatus::notfound")):
+                return True
+        if has_error_message:
+            return False
     for key in ("Error", "error", "message"):
         value = data.get(key)
         if isinstance(value, str) and "not found" in value.lower():
             return True
+
+    tracker_data = data.get("data")
+    if isinstance(tracker_data, dict):
+        platform_info = tracker_data.get("platformInfo")
+        if isinstance(platform_info, dict):
+            identifier = (
+                platform_info.get("platformUserIdentifier")
+                or platform_info.get("platformUserHandle")
+                or platform_info.get("platformUserId")
+            )
+            if identifier:
+                return False
+        return True
+
     global_data = data.get("global")
     if not isinstance(global_data, dict):
         return True
@@ -1995,6 +2093,14 @@ def _is_player_not_found(data: dict[str, Any]) -> bool:
 
 
 def _parse_player_stats(
+    data: dict[str, Any], platform: str, fallback_name: str
+) -> ApexPlayerStats:
+    if _looks_like_tracker_profile(data):
+        return _parse_tracker_player_stats(data, platform, fallback_name)
+    return _parse_mozambique_player_stats(data, platform, fallback_name)
+
+
+def _parse_mozambique_player_stats(
     data: dict[str, Any], platform: str, fallback_name: str
 ) -> ApexPlayerStats:
     global_data = data.get("global", {})
@@ -2054,6 +2160,137 @@ def _parse_player_stats(
         is_in_lobby_or_match=is_in_lobby_or_match,
         platform=platform,
     )
+
+
+def _looks_like_tracker_profile(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    payload = data.get("data")
+    if not isinstance(payload, dict):
+        return False
+    if isinstance(payload.get("segments"), list):
+        return True
+    return isinstance(payload.get("platformInfo"), dict)
+
+
+def _tracker_overview_segment(segments: list[Any]) -> dict[str, Any]:
+    for item in segments:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip().lower() == "overview":
+            return item
+    return {}
+
+
+def _tracker_active_legend_segment(segments: list[Any], active_name: str) -> dict[str, Any]:
+    for item in segments:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip().lower() != "legend":
+            continue
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        if metadata.get("isActive") is True:
+            return item
+        name = str(metadata.get("name") or "").strip()
+        if active_name and name and name.lower() == active_name.lower():
+            return item
+    return {}
+
+
+def _tracker_stat_entry(stats: Any, key: str) -> dict[str, Any]:
+    if not isinstance(stats, dict):
+        return {}
+    item = stats.get(key)
+    return item if isinstance(item, dict) else {}
+
+
+def _split_rank_name_and_division(rank_name_raw: str) -> tuple[str, int]:
+    text = str(rank_name_raw or "").strip()
+    if not text:
+        return ("Unranked", 0)
+    match = re.match(r"^(?P<name>.+?)\s+(?P<div>\d+)$", text)
+    if not match:
+        return (text, 0)
+    rank_name = match.group("name").strip()
+    rank_div = _to_int(match.group("div")) or 0
+    return (rank_name, rank_div)
+
+
+def _parse_tracker_player_stats(
+    data: dict[str, Any], platform: str, fallback_name: str
+) -> ApexPlayerStats:
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    platform_info = payload.get("platformInfo") if isinstance(payload.get("platformInfo"), dict) else {}
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    segments = payload.get("segments") if isinstance(payload.get("segments"), list) else []
+
+    overview = _tracker_overview_segment(segments)
+    overview_stats = overview.get("stats") if isinstance(overview.get("stats"), dict) else {}
+    level_entry = _tracker_stat_entry(overview_stats, "level")
+    rank_score_entry = _tracker_stat_entry(overview_stats, "rankScore")
+
+    rank_score = _to_int(rank_score_entry.get("value")) or 0
+    rank_meta = rank_score_entry.get("metadata") if isinstance(rank_score_entry.get("metadata"), dict) else {}
+    rank_name_raw = (
+        rank_meta.get("rankName")
+        or rank_score_entry.get("rankName")
+        or rank_score_entry.get("displayName")
+        or "Unranked"
+    )
+    rank_name_text, rank_div = _split_rank_name_and_division(str(rank_name_raw))
+
+    rank_percentile = _to_float(rank_score_entry.get("percentile"))
+    global_rank_percent = f"{rank_percentile:.2f}" if rank_percentile is not None else "未知"
+
+    active_legend_raw = str(metadata.get("activeLegendName") or "").strip()
+    legend_segment = _tracker_active_legend_segment(segments, active_legend_raw)
+    legend_metadata = (
+        legend_segment.get("metadata")
+        if isinstance(legend_segment.get("metadata"), dict)
+        else {}
+    )
+    selected_legend_raw = (
+        str(legend_metadata.get("name") or "").strip()
+        or active_legend_raw
+        or "未知"
+    )
+    selected_legend = translate(selected_legend_raw)
+
+    legend_kills_rank: LegendKillsRank | None = None
+    legend_stats = legend_segment.get("stats") if isinstance(legend_segment.get("stats"), dict) else {}
+    kills_entry = _tracker_stat_entry(legend_stats, "kills")
+    kills_percentile = _to_float(kills_entry.get("percentile"))
+    kills_value = _to_int(kills_entry.get("value"))
+    if kills_percentile is not None and kills_value is not None:
+        legend_kills_rank = LegendKillsRank(
+            value=kills_value,
+            global_percent=f"{kills_percentile:.2f}",
+        )
+
+    name = (
+        platform_info.get("platformUserIdentifier")
+        or platform_info.get("platformUserHandle")
+        or fallback_name
+    )
+    uid = str(platform_info.get("platformUserId") or "")
+    current_state = translate_state("offline")
+    return ApexPlayerStats(
+        name=str(name or fallback_name),
+        uid=uid,
+        level=_to_int(level_entry.get("value")) or 0,
+        rank_score=rank_score,
+        rank_name=translate(rank_name_text),
+        rank_div=rank_div,
+        global_rank_percent=global_rank_percent,
+        is_online=False,
+        selected_legend=selected_legend,
+        legend_kills_rank=legend_kills_rank,
+        current_state=current_state,
+        is_in_lobby_or_match=False,
+        platform=platform,
+    )
+
+
 def _to_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
@@ -2730,6 +2967,11 @@ def _month_name_to_number(value: str) -> int | None:
         return None
 
 
+def _is_tracker_api_url(url: str) -> bool:
+    lowered = str(url or "").lower()
+    return "public-api.tracker.gg" in lowered
+
+
 def _extract_response_error_message(response: httpx.Response | None) -> str:
     if response is None:
         return ""
@@ -2740,6 +2982,15 @@ def _extract_response_error_message(response: httpx.Response | None) -> str:
         payload = None
 
     if isinstance(payload, dict):
+        errors = payload.get("errors")
+        if isinstance(errors, list):
+            for item in errors:
+                if not isinstance(item, dict):
+                    continue
+                for key in ("message", "code"):
+                    value = item.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
         for key in ("Error", "error", "message", "detail"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
@@ -2762,7 +3013,21 @@ def _build_api_error_from_payload(data: Any) -> ApexApiError | None:
     if not isinstance(data, dict):
         return None
     message = ""
+    errors = data.get("errors")
+    if isinstance(errors, list):
+        for item in errors:
+            if not isinstance(item, dict):
+                continue
+            for key in ("message", "code"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    message = value.strip()
+                    break
+            if message:
+                break
     for key in ("Error", "error", "message", "detail"):
+        if message:
+            break
         value = data.get(key)
         if isinstance(value, str) and value.strip():
             message = value.strip()

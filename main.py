@@ -745,11 +745,11 @@ class Main(Star):
 
     @staticmethod
     def _api_key_apply_url() -> str:
-        return "https://portal.apexlegendsapi.com/"
+        return "https://tracker.gg/developers"
 
     @staticmethod
     def _api_verify_url() -> str:
-        return "https://portal.apexlegendsapi.com/discord-auth"
+        return "https://trackernetwork.freshdesk.com/support/solutions/articles/19000152565-developer-apis-faqs"
 
     def _missing_api_key_text(self) -> str:
         return "\n".join(
@@ -766,8 +766,8 @@ class Main(Star):
         lines = [self._time_line()]
         if isinstance(error, ApexApiError):
             lines.append(f"❌ {action}失败：{error.user_message}")
-            if "验证" in error.user_message:
-                lines.append(f"🔗 验证入口: {self._api_verify_url()}")
+            if any(token in error.user_message for token in ("验证", "白名单", "限制", "权限")):
+                lines.append(f"🔗 开通说明: {self._api_verify_url()}")
             else:
                 lines.append(f"🔑 Key 申请地址: {self._api_key_apply_url()}")
             return "\n".join(lines)

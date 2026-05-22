@@ -1,8 +1,8 @@
 {
   "api_key": {
-    "description": "Apex Legends API Key",
+    "description": "Tracker.gg API Key",
     "type": "string",
-    "hint": "Key 申请后通常还需要在 portal.apexlegendsapi.com 绑定 Discord 完成验证，否则查询接口可能返回 429 验证提示。",
+    "hint": "请在 https://tracker.gg/developers 申请 TRN API Key。若返回 401/403，请先确认应用状态与白名单说明：https://trackernetwork.freshdesk.com/support/solutions/articles/19000152565-developer-apis-faqs",
     "obvious_hint": true,
     "default": ""
   },

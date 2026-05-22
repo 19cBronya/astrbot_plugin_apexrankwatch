@@ -6,8 +6,10 @@ import sys
 import types
 from pathlib import Path
 
+import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import apex_service
 
 
 def _install_astrbot_stubs() -> None:
@@ -168,3 +170,125 @@ def test_player_rank_image_mode_uses_rendered_image(monkeypatch, tmp_path):
 
 async def _async_return(value):
     return value
+
+
+def test_parse_tracker_player_stats():
+    payload = {
+        "data": {
+            "platformInfo": {
+                "platformUserIdentifier": "9997kazusa",
+                "platformUserId": "1234567890",
+            },
+            "metadata": {
+                "activeLegendName": "Wraith",
+            },
+            "segments": [
+                {
+                    "type": "overview",
+                    "stats": {
+                        "level": {"value": 321},
+                        "rankScore": {
+                            "value": 15000,
+                            "percentile": 0.5,
+                            "metadata": {"rankName": "Diamond 4"},
+                        },
+                    },
+                },
+                {
+                    "type": "legend",
+                    "metadata": {"name": "Wraith", "isActive": True},
+                    "stats": {
+                        "kills": {
+                            "value": 888,
+                            "percentile": 1.23,
+                        }
+                    },
+                },
+            ],
+        }
+    }
+
+    stats = apex_service._parse_player_stats(payload, "PC", "fallback_name")
+
+    assert stats.name == "9997kazusa"
+    assert stats.uid == "1234567890"
+    assert stats.level == 321
+    assert stats.rank_score == 15000
+    assert stats.rank_name == "钻石"
+    assert stats.rank_div == 4
+    assert stats.global_rank_percent == "0.50"
+    assert stats.is_online is False
+    assert stats.selected_legend == "恶灵"
+    assert stats.legend_kills_rank is not None
+    assert stats.legend_kills_rank.value == 888
+    assert stats.legend_kills_rank.global_percent == "1.23"
+    assert stats.current_state == "离线"
+    assert stats.is_in_lobby_or_match is False
+
+
+def test_parse_legacy_mozambique_player_stats_still_works():
+    payload = {
+        "global": {
+            "name": "legacy_player",
+            "uid": "legacy_uid",
+            "level": 55,
+            "rank": {
+                "rankScore": 4321,
+                "rankName": "Gold",
+                "rankDiv": 2,
+                "ALStopPercentGlobal": "5.4",
+            },
+        },
+        "realtime": {
+            "isOnline": 1,
+            "selectedLegend": "Pathfinder",
+            "currentStateAsText": "inLobby",
+        },
+        "legends": {
+            "selected": {
+                "data": [
+                    {
+                        "name": "BR Kills",
+                        "value": 100,
+                        "rank": {"topPercent": 2.34},
+                    }
+                ]
+            }
+        },
+    }
+
+    stats = apex_service._parse_player_stats(payload, "PC", "fallback_name")
+
+    assert stats.name == "legacy_player"
+    assert stats.uid == "legacy_uid"
+    assert stats.rank_score == 4321
+    assert stats.rank_name == "黄金"
+    assert stats.rank_div == 2
+    assert stats.global_rank_percent == "5.4"
+    assert stats.is_online is True
+    assert stats.selected_legend == "探路者"
+    assert stats.current_state == "在大厅"
+
+
+def test_tracker_not_found_detection_and_error_message():
+    not_found_payload = {
+        "errors": [
+            {
+                "code": "CollectorResultStatus::NotFound",
+                "message": "CollectorResultStatus::NotFound",
+            }
+        ]
+    }
+
+    assert apex_service._is_player_not_found(not_found_payload) is True
+
+    response = httpx.Response(
+        404,
+        json=not_found_payload,
+        request=httpx.Request(
+            "GET",
+            "https://public-api.tracker.gg/v2/apex/standard/profile/origin/none",
+        ),
+    )
+    message = apex_service._extract_response_error_message(response)
+    assert "NotFound" in message
