@@ -463,13 +463,33 @@ class ApexApiClient:
     async def fetch_player_stats_by_name(
         self, player_name: str, platform: str
     ) -> ApexPlayerStats:
-        api_url = self._tracker_profile_url(platform, player_name)
-        data = await self._request_tracker_player_data(api_url, player_name)
+        try:
+            api_url = self._tracker_profile_url(platform, player_name)
+            data = await self._request_tracker_player_data(api_url, player_name)
+        except ApiAuthenticationError as e:
+            if not self._api_key:
+                raise
+            self._logger.info(
+                f"Tracker API Key 认证失败（{e.user_message}），回退到旧 Apex API..."
+            )
+            legacy_url = "https://api.mozambiquehe.re/bridge"
+            params = {"auth": self._api_key, "player": player_name, "platform": platform}
+            data = await self._request_player_data(legacy_url, params, player_name)
         return _parse_player_stats(data, platform, player_name)
 
     async def fetch_player_stats_by_uid(self, uid: str, platform: str) -> ApexPlayerStats:
-        api_url = self._tracker_profile_url(platform, uid)
-        data = await self._request_tracker_player_data(api_url, uid)
+        try:
+            api_url = self._tracker_profile_url(platform, uid)
+            data = await self._request_tracker_player_data(api_url, uid)
+        except ApiAuthenticationError as e:
+            if not self._api_key:
+                raise
+            self._logger.info(
+                f"Tracker API Key 认证失败（{e.user_message}），回退到旧 Apex API..."
+            )
+            legacy_url = "https://api.mozambiquehe.re/bridge"
+            params = {"auth": self._api_key, "uid": uid, "platform": platform}
+            data = await self._request_player_data(legacy_url, params, uid)
         return _parse_player_stats(data, platform, uid)
 
     async def fetch_map_rotation_info(self) -> MapRotationInfo:

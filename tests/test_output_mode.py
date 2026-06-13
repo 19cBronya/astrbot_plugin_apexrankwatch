@@ -204,14 +204,21 @@ def test_cn_query_uid_command_accepts_api_response_with_blank_player_name(monkey
     main_module = _load_main_module()
     api_client = object.__new__(main_module.ApexApiClient)
     api_client._api_key = "key"
+    api_client._tracker_api_key = "tracker_key"
 
     async def fake_request(_url, _params):
         return _blank_name_uid_payload()
 
+    async def fake_tracker_request(_url, _identifier):
+        return _blank_name_uid_payload()
+
     api_client._request_with_retry = fake_request
+    api_client._request_tracker_player_data = fake_tracker_request
 
     plugin = object.__new__(main_module.Main)
-    plugin._config = types.SimpleNamespace(api_key="key", min_valid_score=1, output_mode="text")
+    plugin._config = types.SimpleNamespace(
+        api_key="key", tracker_api_key="tracker_key", min_valid_score=1, output_mode="text"
+    )
     plugin._api = api_client
 
     monkeypatch.setattr(plugin, "_guard_access", lambda event: "")
